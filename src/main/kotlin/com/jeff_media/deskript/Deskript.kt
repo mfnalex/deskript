@@ -4,9 +4,14 @@ import com.jeff_media.deskript.color.BashColorCodes
 import com.jeff_media.deskript.color.Color
 import com.jeff_media.deskript.color.ColorCodes
 import com.jeff_media.deskript.color.LevelColors
+import java.lang.reflect.Modifier
+import java.util.Objects
 import kotlin.reflect.KClass
 import kotlin.reflect.KProperty1
+import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
+import kotlin.reflect.jvm.javaField
+import kotlin.reflect.jvm.reflect
 
 data class Deskript(val colors: ColorCodes, val indent: Boolean) {
 
@@ -19,47 +24,56 @@ data class Deskript(val colors: ColorCodes, val indent: Boolean) {
         val name = getPartlyQualifiedName(obj)
         val clazz = obj::class
 
-        if (Node.Primitive.isPrimitive(obj)) return Node.Primitive(this, obj)
-
-        return when (obj) {
-            is Map<*, *> -> Node.Complex(
-                this,
-                name,
-                obj.mapValues { fromObject(it.value) }.mapKeys { it.key.toString() })
-
-            is Collection<*> -> Node.List(this, name, obj.map { fromObject(it) })
-            is Array<*> -> Node.List(this, name, obj.map { fromObject(it) })
-
-            //else -> Node.Primitive(this, obj)
-            else -> Node.Complex(this, name, clazz.memberProperties.associate {
+        val primitive = Node.Primitive(this, obj)
+        if(Node.Primitive.isPrimitive(obj)) return primitive
+        val complex = Node.Complex(this, name, clazz.memberProperties
+            .filter {it.javaField?.modifiers?.let { mods -> !Modifier.isTransient(mods) } ?: true }
+            .associate {
                 val propName = it.name
                 val propValue = try {
                     @Suppress("UNCHECKED_CAST")
-                    val value = (it as KProperty1<Any, *>).get(obj)  // Explicit cast to handle the type issue
-                    println("Got value for $propName: $value [${value?.javaClass?.simpleName}]")
+                    val value = (it as KProperty1<Any, *>).get(obj)
                     fromObject(value)
                 } catch (e: Exception) {
                     Node.VoidNode(this)
                 }
                 propName to propValue
             }.filter { (_, node) -> node !is Node.VoidNode })
+
+        when (obj) {
+            is Map<*, *> -> return Node.Complex(
+                this,
+                name,
+                obj.mapValues { fromObject(it.value) }.mapKeys { it.key.toString() })
+
+            is Collection<*> -> return Node.List(this, name, obj.map { fromObject(it) })
+            is Array<*> -> return Node.List(this, name, obj.map { fromObject(it) })
+        }
+
+        if(complex.size() == 0) {
+            return primitive
+        } else {
+            return complex
         }
     }
 
     fun parse(obj: Any): Node = fromObject(obj)
     fun describe(obj: Any): String = parse(obj).describe()
+    fun <T:Any> described(obj: T): Described<T> = Described(this, obj)
 }
 
-fun getFromGetter(deskript: Deskript, obj: Any, getter: KProperty1.Getter<*,*>): Any? {
-    try {
-        return getter.call(obj)
-    } catch (e: Exception) { }
+class Described<T:Any>(private val deskript: Deskript, private val value: T) {
+    override fun toString(): String {
+        return deskript.describe(value)
+    }
 
-    try {
-        return getter.call(obj)
-    } catch (e: Exception) { }
+    override fun equals(other: Any?): Boolean {
+        return value == other
+    }
 
-    return Node.VoidNode(deskript)
+    override fun hashCode(): Int {
+        return value.hashCode()
+    }
 }
 
 sealed class Node(protected val deskript: Deskript, private val _name: String?) {
@@ -194,5 +208,12 @@ fun main(args: Array<String>) {
     val node2 = deskript2.parse(mapOf("name" to "Jeff", "age" to 29, "friends" to mapOf("mfnalex" to "very good friends", "mfnaley" to "close friends", "mfnalez" to mapOf("int" to 30, "float" to 27.5f, "double" to 99.00003, "boolean" to true, "char" to 'c', "short" to 1.toShort(), "byte" to 2.toByte(), "enum" to Color.DARK_BLUE, "long" to 1000000000000000L, "string" to "string", "list" to listOf("a", "b", "c")))))
     println(node2.describe())
 
+    println(deskript.describe(System.out))
 
+
+}
+
+val objectToStringMethod = Object::class.java.getDeclaredMethod("toString")
+fun defaultToString(obj: Any): String {
+    return objectToStringMethod.invoke(obj) as String
 }
